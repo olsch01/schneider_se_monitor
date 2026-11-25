@@ -1,0 +1,7 @@
+.env
+*.har
+captures/
+reference/
+__pycache__/
+.venv/
+.tokens.json

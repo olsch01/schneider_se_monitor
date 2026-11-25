@@ -1,0 +1,48 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Log in to SE-Monitor",
+        "description": "1. Open [this Schneider login link]({login_url}) in your browser and sign in with your SE-Monitor account.\n2. After signing in, your browser is sent to a `http://localhost/?code=...` page that will not load. That is expected.\n3. Copy the full address from the browser's address bar and paste it below.\n\nThe link can only be used once; if it fails, close this dialog and start again.",
+        "data": {
+          "redirect_url": "Redirected URL"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Log in to SE-Monitor again",
+        "description": "Your SE-Monitor login has expired.\n\n1. Open [this Schneider login link]({login_url}) and sign in.\n2. Paste the full `http://localhost/?code=...` address you are sent to below.",
+        "data": {
+          "redirect_url": "Redirected URL"
+        }
+      },
+      "site": {
+        "title": "Choose a site",
+        "data": {
+          "site_id": "Site"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Login failed. Start the login again with a fresh link.",
+      "invalid_url": "That doesn't look like the redirected URL. It should start with http://localhost/?code=",
+      "cannot_connect": "Could not reach the SE-Monitor cloud.",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This site is already configured.",
+      "no_sites": "No sites were found on this SE-Monitor account.",
+      "reauth_successful": "Re-authentication was successful.",
+      "wrong_account": "You logged in with a different account than the one this entry was set up with."
+    }
+  },
+  "entity": {
+    "sensor": {
+      "power": { "name": "Power" },
+      "solar_power": { "name": "Solar power" },
+      "energy_today": { "name": "Energy today" },
+      "import_today": { "name": "Grid import today" },
+      "export_today": { "name": "Grid export today" },
+      "energy_month": { "name": "Energy this month" }
+    }
+  }
+}

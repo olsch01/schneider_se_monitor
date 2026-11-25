@@ -1,0 +1,14 @@
+{
+  "domain": "schneider_se_monitor",
+  "name": "Schneider SE-Monitor",
+  "codeowners": [],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://github.com/OWNER/schneider_se_monitor",
+  "integration_type": "hub",
+  "iot_class": "cloud_push",
+  "issue_tracker": "https://github.com/OWNER/schneider_se_monitor/issues",
+  "loggers": ["custom_components.schneider_se_monitor"],
+  "requirements": [],
+  "version": "0.1.0"
+}
