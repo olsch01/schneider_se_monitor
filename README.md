@@ -124,6 +124,16 @@ The `tools/` folder holds the scripts used to map the API: a mitmproxy
 add-on, a redacting flow exporter and a browser login helper. They read
 credentials and tokens only from git-ignored files (`.env`, `.tokens.json`).
 
+## Acknowledgements
+
+Special thanks to the developers of the Home Assistant
+[Sense integration](https://www.home-assistant.io/integrations/sense/) and the
+[sense_energy](https://github.com/scottbonline/sense) library it is built on,
+including [kbickar](https://github.com/kbickar) and
+[scottbonline](https://github.com/scottbonline). Their work served as the
+model for this integration: its devices, entities and naming follow the Sense
+integration so that former Wiser Energy owners get a familiar setup.
+
 ## License
 
 MIT
