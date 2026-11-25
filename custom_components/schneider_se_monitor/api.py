@@ -526,22 +526,24 @@ class SEMonitorRealtime:
     async def _session_loop(self, ws: aiohttp.ClientWebSocketResponse, renew_at: float | None) -> bool:
         """Subscribe and consume frames until the session should end."""
         await ws.send_json({"action": "subscribeSiteLiveData", "clipsal_solar_id": self._site_id})
+        # The server keeps sending status/info messages while the monitor is offline, so
+        # measure silence from the last realtime frame, not from the last message.
+        last_frame = time.monotonic()
         while True:
             if renew_at and time.time() >= renew_at:
                 _LOGGER.debug("Reconnecting realtime websocket to renew token")
                 self._renewing = True
                 return self._session_had_data
-            wait = self.NO_DATA_TIMEOUT
+            remaining = self.NO_DATA_TIMEOUT - (time.monotonic() - last_frame)
+            if remaining <= 0:
+                raise SEMonitorConnectionError(f"no realtime data for {self.NO_DATA_TIMEOUT:g} s")
+            wait = remaining
             if renew_at:
                 wait = max(min(wait, renew_at - time.time()), 0.5)
             try:
                 msg = await ws.receive(timeout=wait)
             except TimeoutError:
-                if renew_at and time.time() >= renew_at:
-                    continue
-                raise SEMonitorConnectionError(
-                    f"no realtime data for {self.NO_DATA_TIMEOUT:g} s"
-                ) from None
+                continue  # loop re-checks the renewal and no-data deadlines
             if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
                 self._last_error = "server closed the connection"
                 return self._session_had_data
@@ -555,6 +557,7 @@ class SEMonitorRealtime:
                 continue
             mtype = data.get("type")
             if mtype == "realtime_update":
+                last_frame = time.monotonic()
                 self._session_had_data = True
                 self.last_data = RealtimeData.from_payload(data.get("payload") or {})
                 self.first_data.set()

@@ -71,6 +71,14 @@ async def _serve(behaviours):
         elif mode == "offline":
             async for _msg in ws:  # subscribed, but the monitor sends nothing
                 pass
+        elif mode == "chatty_offline":
+            # monitor offline, but the server keeps sending status messages
+            while not ws.closed:
+                await ws.send_json({"type": "site_device_status", "payload": {"message": "status"}})
+                try:
+                    await ws.receive(timeout=0.05)
+                except TimeoutError:
+                    pass
         elif mode == "close":
             await ws.close()
         return ws
@@ -180,3 +188,21 @@ async def test_login_revoked_stops_and_reports():
         rt = api.SEMonitorRealtime(session, DeadAuth(), 1, on_data=lambda d: None, on_auth_error=errors.append)
         await asyncio.wait_for(rt.run(), 2)  # returns instead of retrying forever
     assert len(errors) == 1
+
+
+@pytest.mark.parametrize("expected_lingering_timers", [True])
+async def test_status_messages_do_not_hide_an_outage(caplog, expected_lingering_timers):
+    """Non-data messages must not keep a dead subscription alive."""
+    server, state = await _serve(["chatty_offline", "online_forever"])
+    received: list = []
+    caplog.set_level(logging.INFO, logger="custom_components.schneider_se_monitor.api")
+    async with aiohttp.ClientSession() as session:
+        rt = _client(session, FakeAuth(), server, received)
+        task = asyncio.create_task(rt.run())
+        await _until(lambda: len(received) >= 2)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    await server.close()
+    assert state["n"] == 2
+    assert state["times"][1] - state["times"][0] >= 0.3  # gave up after NO_DATA_TIMEOUT
+    assert any("unavailable" in r.getMessage() for r in caplog.records)
