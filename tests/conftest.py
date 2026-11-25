@@ -20,3 +20,10 @@ SITE = {
     "devices": [{"device_type": "METER", "manufacturer": "Schneider Electric",
                  "model": "Schneider Energy Monitor", "serial_number": "W000000001"}],
 }
+
+APPLIANCES = [
+    {"appliance_id": 101, "assignment": "load_refrigerator__1", "display_name": "Fridge"},
+    {"appliance_id": 102, "assignment": "load_other__1", "display_name": "Washer"},
+    {"appliance_id": 103, "assignment": "always_on__1", "display_name": "Rest of Home"},
+    {"appliance_id": 104, "assignment": "consumption__1", "display_name": "mains"},
+]

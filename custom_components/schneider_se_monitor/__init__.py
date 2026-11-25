@@ -14,6 +14,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api import (
+    Appliance,
     SEMonitorAuth,
     SEMonitorAuthError,
     SEMonitorClient,
@@ -26,7 +27,7 @@ from .coordinator import SEMonitorEnergyCoordinator, SEMonitorRealtimeCoordinato
 
 _LOGGER = logging.getLogger(__name__)
 
-PLATFORMS: list[Platform] = [Platform.SENSOR]
+PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.SENSOR]
 
 
 @dataclass
@@ -34,6 +35,7 @@ class SEMonitorData:
     """Runtime data for a config entry."""
 
     site: Site
+    appliances: list[Appliance]
     client: SEMonitorClient
     realtime: SEMonitorRealtimeCoordinator
     energy: SEMonitorEnergyCoordinator
@@ -51,6 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: SEMonitorConfigEntry) ->
 
     try:
         site = await client.async_get_site(site_id)
+        appliances = [a for a in await client.async_get_appliances(site_id) if a.is_device]
     except SEMonitorAuthError as err:
         raise ConfigEntryAuthFailed(str(err)) from err
     except SEMonitorConnectionError as err:
@@ -72,12 +75,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: SEMonitorConfigEntry) ->
 
     ws = SEMonitorRealtime(session, auth, site_id, on_data=lambda _d: None, on_auth_error=_on_auth_error)
     realtime_coordinator = SEMonitorRealtimeCoordinator(hass, entry, ws)
-    energy_coordinator = SEMonitorEnergyCoordinator(hass, entry, client, site)
+    energy_coordinator = SEMonitorEnergyCoordinator(
+        hass, entry, client, site, {a.appliance_id for a in appliances}
+    )
 
     await energy_coordinator.async_config_entry_first_refresh()
     _persist_refresh_token()
 
-    entry.runtime_data = SEMonitorData(site, client, realtime_coordinator, energy_coordinator)
+    entry.runtime_data = SEMonitorData(
+        site, appliances, client, realtime_coordinator, energy_coordinator
+    )
     entry.async_create_background_task(hass, ws.run(), f"se_monitor_ws_{site_id}")
     entry.async_on_unload(energy_coordinator.async_add_listener(_persist_refresh_token))
     # The first realtime frame usually arrives within a few seconds; wait briefly so the

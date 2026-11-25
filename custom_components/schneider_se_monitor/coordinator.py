@@ -22,7 +22,7 @@ from .api import (
     SEMonitorRealtime,
     Site,
 )
-from .const import ENERGY_UPDATE_INTERVAL, REALTIME_STALE_AFTER, REALTIME_UPDATE_INTERVAL
+from .const import APPLIANCE_CHECK_INTERVAL, ENERGY_UPDATE_INTERVAL, REALTIME_STALE_AFTER, REALTIME_UPDATE_INTERVAL
 
 if TYPE_CHECKING:
     from . import SEMonitorConfigEntry
@@ -78,7 +78,12 @@ class SEMonitorEnergyCoordinator(DataUpdateCoordinator[EnergyData]):
     config_entry: SEMonitorConfigEntry
 
     def __init__(
-        self, hass: HomeAssistant, entry: SEMonitorConfigEntry, client: SEMonitorClient, site: Site
+        self,
+        hass: HomeAssistant,
+        entry: SEMonitorConfigEntry,
+        client: SEMonitorClient,
+        site: Site,
+        appliance_ids: set[int],
     ) -> None:
         """Initialize."""
         super().__init__(
@@ -91,6 +96,22 @@ class SEMonitorEnergyCoordinator(DataUpdateCoordinator[EnergyData]):
         self.client = client
         self.site = site
         self._tz = ZoneInfo(site.timezone)
+        self._appliance_ids = appliance_ids
+        self._appliances_checked = time.monotonic()
+
+    async def _async_check_appliances(self) -> None:
+        """Reload the entry when the monitor detects (or drops) a device."""
+        if time.monotonic() - self._appliances_checked < APPLIANCE_CHECK_INTERVAL:
+            return
+        self._appliances_checked = time.monotonic()
+        try:
+            appliances = await self.client.async_get_appliances(self.site.site_id)
+        except SEMonitorConnectionError:
+            return
+        ids = {a.appliance_id for a in appliances if a.is_device}
+        if ids != self._appliance_ids:
+            _LOGGER.info("SE-Monitor device list changed; reloading to update entities")
+            self.hass.config_entries.async_schedule_reload(self.config_entry.entry_id)
 
     async def _async_update_data(self) -> EnergyData:
         today = datetime.now(self._tz).date()
@@ -109,6 +130,7 @@ class SEMonitorEnergyCoordinator(DataUpdateCoordinator[EnergyData]):
             raise ConfigEntryAuthFailed(str(err)) from err
         except SEMonitorConnectionError as err:
             raise UpdateFailed(str(err)) from err
+        await self._async_check_appliances()
 
         day = next((d for d in days if d.date.startswith(today.isoformat())), None)
         month = next((m for m in months if m.date.startswith(month_start.isoformat()[:7])), None)

@@ -37,12 +37,30 @@
   },
   "entity": {
     "sensor": {
-      "power": { "name": "Power" },
-      "solar_power": { "name": "Solar power" },
-      "energy_today": { "name": "Energy today" },
-      "import_today": { "name": "Grid import today" },
-      "export_today": { "name": "Grid export today" },
-      "energy_month": { "name": "Energy this month" }
+      "power": {
+        "name": "Power"
+      },
+      "solar_power": {
+        "name": "Solar power"
+      },
+      "energy_today": {
+        "name": "Energy today"
+      },
+      "import_today": {
+        "name": "Grid import today"
+      },
+      "export_today": {
+        "name": "Grid export today"
+      },
+      "energy_month": {
+        "name": "Energy this month"
+      },
+      "device_power": {
+        "name": "Power"
+      },
+      "device_energy_today": {
+        "name": "Energy today"
+      }
     }
   }
 }

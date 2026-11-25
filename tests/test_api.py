@@ -101,3 +101,12 @@ async def test_http_error_includes_detail(hass, aioclient_mock):
     aioclient_mock.get(f"{api.API_URL}user", status=400, text="start_date cannot be after end_date")
     with pytest.raises(api.SEMonitorConnectionError, match="start_date cannot be after"):
         await client.async_get_user()
+
+
+def test_appliance_parsing_and_device_power():
+    from .conftest import APPLIANCES
+    apps = [api.Appliance.from_api(x) for x in APPLIANCES]
+    assert [a.name for a in apps] == ["Fridge", "Washer", "Always On", "mains"]
+    assert [a.is_device for a in apps] == [True, True, True, False]
+    rt = api.RealtimeData.from_payload({"devices": [{"appliance_id": 101, "w": 42.0}, {"appliance_id": 102, "w": None}]})
+    assert rt.device_power(101) == 42.0 and rt.device_power(102) == 0.0 and rt.device_power(103) is None

@@ -261,6 +261,45 @@ class RealtimeData:
             devices=payload.get("devices") or [],
         )
 
+    def device_power(self, appliance_id: int) -> float | None:
+        """Watts for one appliance: 0 when listed but off, None when not in the frame."""
+        for dev in self.devices:
+            if dev.get("appliance_id") == appliance_id:
+                return float(dev["w"]) if dev.get("w") is not None else 0.0
+        return None
+
+
+# Assignment prefixes that are not real devices.
+NON_DEVICE_KINDS = frozenset({"consumption"})  # "mains": duplicates the site total
+NAME_OVERRIDES = {"always_on": "Always On"}  # API labels it "Rest of Home" too
+
+
+@dataclass
+class Appliance:
+    """A device detected by the monitor."""
+
+    appliance_id: int
+    name: str
+    assignment: str
+
+    @property
+    def kind(self) -> str:
+        """Assignment type, e.g. 'load_refrigerator' or 'always_on'."""
+        return self.assignment.split("__", 1)[0]
+
+    @property
+    def is_device(self) -> bool:
+        """False for pseudo entries such as the mains total."""
+        return self.kind not in NON_DEVICE_KINDS
+
+    @classmethod
+    def from_api(cls, raw: dict[str, Any]) -> Appliance:
+        """Parse an appliances entry."""
+        assignment = raw.get("assignment") or ""
+        kind = assignment.split("__", 1)[0]
+        name = NAME_OVERRIDES.get(kind) or raw.get("display_name") or f"Device {raw['appliance_id']}"
+        return cls(appliance_id=int(raw["appliance_id"]), name=name, assignment=assignment)
+
 
 # --------------------------------------------------------------------------- #
 # REST client
@@ -318,9 +357,9 @@ class SEMonitorClient:
         """Return site details, including devices."""
         return _site(await self._get(f"sites/{site_id}"))
 
-    async def async_get_appliances(self, site_id: int) -> list[dict[str, Any]]:
-        """Return detected appliances (devices)."""
-        return await self._get(f"sites/{site_id}/appliances")
+    async def async_get_appliances(self, site_id: int) -> list[Appliance]:
+        """Return detected appliances (devices), including pseudo entries."""
+        return [Appliance.from_api(a) for a in await self._get(f"sites/{site_id}/appliances")]
 
     async def async_get_energy_usage(
         self, site_id: int, start_date: str, end_date: str, groupby: str = "day"
@@ -370,6 +409,10 @@ def _site(raw: dict[str, Any]) -> Site:
 class SEMonitorRealtime:
     """Keeps a websocket open and reports realtime_update frames to a callback."""
 
+    NO_DATA_TIMEOUT = 120.0  # reconnect if subscribed but silent this long (monitor offline)
+    BACKOFF_MIN = 5.0
+    BACKOFF_MAX = 120.0  # worst-case delay before picking back up after an outage
+
     def __init__(
         self,
         session: aiohttp.ClientSession,
@@ -388,6 +431,11 @@ class SEMonitorRealtime:
         self.connected = False
         self.last_data: RealtimeData | None = None
         self.first_data = asyncio.Event()
+        self.url = WS_URL
+        self._session_had_data = False
+        self._renewing = False
+        self._outage_logged = False
+        self._last_error: str | None = None
 
     def start(self) -> asyncio.Task[None]:
         """Start the background connection loop."""
@@ -407,58 +455,114 @@ class SEMonitorRealtime:
         self.connected = False
 
     async def run(self) -> None:
-        """Connection loop with reconnect/backoff. Runs until cancelled or auth fails."""
-        backoff = 5
+        """Connection loop. Runs until cancelled or the login stops working.
+
+        Every disconnect (network loss, server close, monitor offline, token renewal)
+        leads to a reconnect. The wait between attempts doubles from BACKOFF_MIN up to
+        BACKOFF_MAX and resets as soon as a connection delivers data again.
+        """
+        backoff = self.BACKOFF_MIN
         while True:
+            got_data = False
             try:
-                await self._connect_once()
-                backoff = 5
+                got_data = await self._connect_once()
             except asyncio.CancelledError:
                 raise
             except SEMonitorAuthError as err:
-                self.connected = False
-                _LOGGER.warning("SE-Monitor realtime auth failed: %s", err)
+                self._set_connected(False, str(err))
                 if self._on_auth_error:
                     self._on_auth_error(err)
                 return
-            except Exception as err:  # noqa: BLE001 - keep the loop alive
-                _LOGGER.debug("SE-Monitor realtime connection error: %s", err)
-            self.connected = False
+            except Exception as err:  # noqa: BLE001 - keep the loop alive whatever happens
+                got_data = got_data or self._session_had_data
+                _LOGGER.debug("SE-Monitor realtime connection ended: %r", err)
+                self._last_error = str(err) or type(err).__name__
+            if self._renewing:
+                self._renewing = False  # planned token renewal: reconnect right away
+                continue
+            if got_data or self._session_had_data:
+                # A working session ended (e.g. server drop): reconnect quickly without
+                # declaring an outage; the staleness check covers a failed reconnect.
+                backoff = self.BACKOFF_MIN
+            else:
+                self._set_connected(False, self._last_error)
             await asyncio.sleep(backoff)
-            backoff = min(backoff * 2, 300)
+            backoff = min(backoff * 2, self.BACKOFF_MAX)
 
-    async def _connect_once(self) -> None:
+    def _set_connected(self, connected: bool, reason: str | None = None) -> None:
+        """Track state and log once per outage / recovery."""
+        if connected and not self.connected:
+            if self._outage_logged:
+                _LOGGER.info("SE-Monitor realtime feed for site %s restored", self._site_id)
+            self._outage_logged = False
+        elif not connected and not self._outage_logged:
+            _LOGGER.warning(
+                "SE-Monitor realtime feed for site %s unavailable (%s); will keep retrying",
+                self._site_id,
+                reason or "no data",
+            )
+            self._outage_logged = True
+        self.connected = connected
+
+    async def _connect_once(self) -> bool:
+        """Run one websocket session. Returns True if it delivered realtime data."""
+        self._session_had_data = False
+        self._last_error = "no data from monitor"
         token = await self._auth.async_get_id_token()
-        # Reconnect before the id token in the URL expires.
-        reconnect_at = _jwt_exp(token) - TOKEN_REFRESH_MARGIN
-        async with self._session.ws_connect(
-            WS_URL, params={"token": token}, heartbeat=30, timeout=aiohttp.ClientWSTimeout(ws_close=10)
-        ) as ws:
-            await ws.send_json({"action": "subscribeSiteLiveData", "clipsal_solar_id": self._site_id})
-            while True:
-                timeout = max(reconnect_at - time.time(), 1) if reconnect_at else None
-                try:
-                    msg = await ws.receive(timeout=min(timeout or 120, 120))
-                except TimeoutError:
-                    if reconnect_at and time.time() >= reconnect_at:
-                        _LOGGER.debug("Reconnecting realtime websocket to renew token")
-                        return
-                    raise SEMonitorConnectionError("No realtime data for 120 s") from None
-                if msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING, aiohttp.WSMsgType.ERROR):
-                    return
-                if msg.type != aiohttp.WSMsgType.TEXT:
+        renew_at = _jwt_exp(token) - TOKEN_REFRESH_MARGIN if _jwt_exp(token) else None
+        try:
+            async with self._session.ws_connect(
+                self.url,
+                params={"token": token},
+                heartbeat=30,
+                timeout=aiohttp.ClientWSTimeout(ws_close=10),
+            ) as ws:
+                return await self._session_loop(ws, renew_at)
+        except aiohttp.WSServerHandshakeError as err:
+            if err.status in (401, 403):
+                self._auth.invalidate()  # next attempt refreshes; refresh raises if login is dead
+            raise
+
+    async def _session_loop(self, ws: aiohttp.ClientWebSocketResponse, renew_at: float | None) -> bool:
+        """Subscribe and consume frames until the session should end."""
+        await ws.send_json({"action": "subscribeSiteLiveData", "clipsal_solar_id": self._site_id})
+        while True:
+            if renew_at and time.time() >= renew_at:
+                _LOGGER.debug("Reconnecting realtime websocket to renew token")
+                self._renewing = True
+                return self._session_had_data
+            wait = self.NO_DATA_TIMEOUT
+            if renew_at:
+                wait = max(min(wait, renew_at - time.time()), 0.5)
+            try:
+                msg = await ws.receive(timeout=wait)
+            except TimeoutError:
+                if renew_at and time.time() >= renew_at:
                     continue
-                try:
-                    data = json.loads(msg.data)
-                except ValueError:
-                    continue
-                mtype = data.get("type")
-                if mtype == "realtime_update":
-                    self.connected = True
-                    self.last_data = RealtimeData.from_payload(data.get("payload") or {})
-                    self.first_data.set()
-                    self._on_data(self.last_data)
-                elif mtype in ("error", "unauthorized"):
-                    raise SEMonitorConnectionError(f"Realtime error: {data.get('payload')}")
-                else:
-                    _LOGGER.debug("SE-Monitor ws %s: %s", mtype, (data.get("payload") or {}).get("message"))
+                raise SEMonitorConnectionError(
+                    f"no realtime data for {self.NO_DATA_TIMEOUT:g} s"
+                ) from None
+            if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING):
+                self._last_error = "server closed the connection"
+                return self._session_had_data
+            if msg.type == aiohttp.WSMsgType.ERROR:
+                raise SEMonitorConnectionError(f"websocket error: {ws.exception()}")
+            if msg.type != aiohttp.WSMsgType.TEXT:
+                continue
+            try:
+                data = json.loads(msg.data)
+            except ValueError:
+                continue
+            mtype = data.get("type")
+            if mtype == "realtime_update":
+                self._session_had_data = True
+                self.last_data = RealtimeData.from_payload(data.get("payload") or {})
+                self.first_data.set()
+                self._set_connected(True)
+                self._on_data(self.last_data)
+            elif mtype in ("error", "unauthorized"):
+                raise SEMonitorConnectionError(f"realtime error: {data.get('payload')}")
+            else:
+                _LOGGER.debug(
+                    "SE-Monitor ws %s: %s", mtype, (data.get("payload") or {}).get("message")
+                )

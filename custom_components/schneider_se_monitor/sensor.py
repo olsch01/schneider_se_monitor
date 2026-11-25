@@ -14,14 +14,13 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import UnitOfEnergy, UnitOfPower
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity, DataUpdateCoordinator
 
 from . import SEMonitorConfigEntry
-from .api import RealtimeData, Site
-from .const import DOMAIN, MANUFACTURER
+from .api import Appliance, RealtimeData, Site
 from .coordinator import EnergyData
+from .entity import appliance_device_info, site_device_info
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -94,6 +93,9 @@ async def async_setup_entry(
         for desc in ENERGY_SENSORS
         if has_solar or not desc.solar_only
     ]
+    for appliance in data.appliances:
+        entities.append(SEMonitorDevicePowerSensor(data.realtime, data.site, appliance))
+        entities.append(SEMonitorDeviceEnergySensor(data.energy, data.site, appliance))
     async_add_entities(entities)
 
 
@@ -113,14 +115,7 @@ class SEMonitorSensor(CoordinatorEntity[DataUpdateCoordinator[Any]], SensorEntit
         super().__init__(coordinator)
         self.entity_description = description
         self._attr_unique_id = f"{site.site_id}_{description.key}"
-        meter = site.meter or {}
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(site.site_id))},
-            name=site.name,
-            manufacturer=meter.get("manufacturer") or MANUFACTURER,
-            model=meter.get("model") or "Energy Monitor",
-            serial_number=meter.get("serial_number"),
-        )
+        self._attr_device_info = site_device_info(site)
 
     @property
     def native_value(self) -> float | None:
@@ -128,3 +123,58 @@ class SEMonitorSensor(CoordinatorEntity[DataUpdateCoordinator[Any]], SensorEntit
         if self.coordinator.data is None:
             return None
         return self.entity_description.value_fn(self.coordinator.data)
+
+
+class SEMonitorDevicePowerSensor(CoordinatorEntity[DataUpdateCoordinator[RealtimeData]], SensorEntity):
+    """Live power of one detected device."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "device_power"
+    _attr_device_class = SensorDeviceClass.POWER
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_suggested_display_precision = 0
+
+    def __init__(
+        self, coordinator: DataUpdateCoordinator[RealtimeData], site: Site, appliance: Appliance
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._appliance_id = appliance.appliance_id
+        self._attr_unique_id = f"{site.site_id}_{appliance.appliance_id}_power"
+        self._attr_device_info = appliance_device_info(site, appliance)
+
+    @property
+    def native_value(self) -> float | None:
+        """Watts, 0 when off; unknown if the live feed doesn't include this device."""
+        if self.coordinator.data is None:
+            return None
+        return self.coordinator.data.device_power(self._appliance_id)
+
+
+class SEMonitorDeviceEnergySensor(CoordinatorEntity[DataUpdateCoordinator[EnergyData]], SensorEntity):
+    """Energy used today by one detected device."""
+
+    _attr_has_entity_name = True
+    _attr_translation_key = "device_energy_today"
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 2
+
+    def __init__(
+        self, coordinator: DataUpdateCoordinator[EnergyData], site: Site, appliance: Appliance
+    ) -> None:
+        """Initialize."""
+        super().__init__(coordinator)
+        self._appliance_id = appliance.appliance_id
+        self._attr_unique_id = f"{site.site_id}_{appliance.appliance_id}_energy_today"
+        self._attr_device_info = appliance_device_info(site, appliance)
+
+    @property
+    def native_value(self) -> float | None:
+        """kWh today; devices missing from today's totals haven't used anything yet."""
+        day = self.coordinator.data.day if self.coordinator.data else None
+        if day is None:
+            return None
+        return day.appliances.get(self._appliance_id) or 0.0

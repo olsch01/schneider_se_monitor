@@ -8,7 +8,7 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.schneider_se_monitor import api
 from custom_components.schneider_se_monitor.const import DOMAIN
-from .conftest import SITE, make_jwt
+from .conftest import APPLIANCES, SITE, make_jwt
 
 P = "custom_components.schneider_se_monitor"
 
@@ -47,14 +47,17 @@ async def test_user_flow_errors(hass: HomeAssistant):
 async def test_setup_creates_sensors(hass: HomeAssistant):
     entry = MockConfigEntry(domain=DOMAIN, unique_id="12345", data={"refresh_token": "rt", "site_id": 12345})
     entry.add_to_hass(hass)
-    usage = api.EnergyUsage("2026-11-24", 12.5, 12.5, 0.0, 12.5, {})
+    usage = api.EnergyUsage("2026-11-24", 12.5, 12.5, 0.0, 12.5, {101: 1.25})
+    appliances = [api.Appliance.from_api(a) for a in APPLIANCES]
     month = api.EnergyUsage("2026-11-01", 300.0, 300.0, 0.0, 300.0, {})
 
     async def fake_run(self):
-        self.last_data = api.RealtimeData.from_payload({"epoch": 1, "consumption": 693.8, "devices": []})
+        self.last_data = api.RealtimeData.from_payload({"epoch": 1, "consumption": 693.8, "devices": [
+            {"appliance_id": 101, "w": 150.5}, {"appliance_id": 102, "w": None}]})
         self.first_data.set()
 
     with patch(f"{P}.SEMonitorClient.async_get_site", AsyncMock(return_value=api._site(SITE))), \
+         patch(f"{P}.SEMonitorClient.async_get_appliances", AsyncMock(return_value=appliances)), \
          patch(f"{P}.coordinator.SEMonitorClient.async_get_energy_usage", AsyncMock(side_effect=[[usage], [month]])), \
          patch(f"{P}.SEMonitorRealtime.run", fake_run), \
          patch(f"{P}.coordinator.datetime") as dt:
@@ -69,6 +72,16 @@ async def test_setup_creates_sensors(hass: HomeAssistant):
     assert hass.states.get("sensor.test_home_energy_this_month").state == "300.0"
     assert hass.states.get("sensor.test_home_power").state == "693.8"
     assert hass.states.get("sensor.test_home_solar_power") is None
+
+    # per-device entities (the "mains" pseudo device is skipped)
+    assert hass.states.get("sensor.fridge_power").state == "150.5"
+    assert hass.states.get("binary_sensor.fridge").state == "on"
+    assert hass.states.get("sensor.fridge_energy_today").state == "1.25"
+    assert hass.states.get("sensor.washer_power").state == "0.0"
+    assert hass.states.get("binary_sensor.washer").state == "off"
+    assert hass.states.get("sensor.washer_energy_today").state == "0.0"
+    assert hass.states.get("sensor.always_on_power").state == "unknown"  # not in live frame
+    assert hass.states.get("sensor.mains_power") is None
 
 
 async def test_setup_auth_failure_starts_reauth(hass: HomeAssistant):

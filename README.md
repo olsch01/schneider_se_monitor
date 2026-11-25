@@ -27,7 +27,30 @@ to the cloud service the SE-Monitor app uses instead.
 The energy sensors work with the Home Assistant **Energy dashboard**. Use
 *Grid import today* as your grid consumption source.
 
-Per-device sensors (the devices the monitor detects) are planned.
+### Detected devices
+
+Like the Sense integration, each device the monitor has detected (Fridge,
+Washer, Well pump, ...) becomes its own Home Assistant device, linked to the
+monitor, with:
+
+| Entity | Unit | Notes |
+|---|---|---|
+| Power | W | Live; 0 when the device is off |
+| Energy today | kWh | Every 5 min; usable as an individual device in the Energy dashboard |
+| *(on/off)* | binary sensor | On while the device draws power. Handy for "washer finished" automations |
+
+Devices the monitor newly detects (or drops) are picked up within an hour; the
+integration reloads itself. Renaming a device in the SE-Monitor app shows up
+after the integration is reloaded or Home Assistant restarts.
+
+### When the monitor goes offline
+
+If the monitor loses its internet connection, the live power entities become
+**unavailable** after about 3 minutes and Home Assistant logs one warning. The
+integration keeps retrying, at most every 2 minutes, and picks back up on its
+own when the monitor returns, logging that the feed was restored. Energy
+totals keep their last value during the outage and catch up once Schneider's
+cloud receives the missed data.
 
 ## Requirements
 
@@ -76,6 +99,12 @@ dialog and start again to get a new link.
 - Data for the last few minutes before midnight may arrive after midnight and
   be counted only in the monthly total.
 - Only the US cloud region (`app-api-us.clipsalcortex.com`) has been tested.
+- Per-device energy comes straight from Schneider and is not always
+  consistent: a device can report more energy than the whole house. These
+  values are passed through unchanged.
+- Entity IDs follow the device names, like the Sense integration. If you still
+  have Sense entities with the same names, the new ones get a numeric suffix
+  (for example `sensor.fridge_power_2`).
 
 ## How it works
 

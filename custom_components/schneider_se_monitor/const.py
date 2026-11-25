@@ -12,3 +12,4 @@ CONF_REDIRECT_URL = "redirect_url"
 REALTIME_UPDATE_INTERVAL = timedelta(seconds=10)
 REALTIME_STALE_AFTER = 180  # seconds without a websocket frame before power goes unavailable
 ENERGY_UPDATE_INTERVAL = timedelta(minutes=5)
+APPLIANCE_CHECK_INTERVAL = 3600  # seconds between checks for new/removed devices
